@@ -737,6 +737,25 @@ public abstract class HttpClient {
 	}
 
 	/**
+	 * Enable or disable {@code retry once} support for the outgoing request when
+	 * {@link reactor.netty.channel.AbortedException#isConnectionReset(Throwable)}.
+	 * By default {@code retry once} is enabled.
+	 *
+	 * @param disableRetry true if {@code retry once} should be disabled, false otherwise
+	 *
+	 * @return a new {@link HttpClient}
+	 * @since 0.9.6
+	 */
+	public final HttpClient disableRetry(boolean disableRetry) {
+		if (disableRetry) {
+			return tcpConfiguration(RETRY_ATTR_DISABLE);
+		}
+		else {
+			return tcpConfiguration(RETRY_ATTR_CONFIG);
+		}
+	}
+
+	/**
 	 * Specifies whether HTTP status 301|302|307|308 auto-redirect support is enabled.
 	 *
 	 * <p><strong>Note:</strong> The sensitive headers {@link #followRedirect(boolean, Consumer) followRedirect}
@@ -1149,6 +1168,12 @@ public abstract class HttpClient {
 
 	static final Function<TcpClient, TcpClient> KEEPALIVE_ATTR_DISABLE =
 			tcp -> tcp.bootstrap(HttpClientConfiguration.MAP_NO_KEEPALIVE);
+
+	static final Function<TcpClient, TcpClient> RETRY_ATTR_CONFIG =
+			tcp -> tcp.bootstrap(HttpClientConfiguration.MAP_RETRY);
+
+	static final Function<TcpClient, TcpClient> RETRY_ATTR_DISABLE =
+			tcp -> tcp.bootstrap(HttpClientConfiguration.MAP_NO_RETRY);
 
 	static final Function<TcpClient, TcpClient> FOLLOW_REDIRECT_ATTR_DISABLE =
 			tcp -> tcp.bootstrap(HttpClientConfiguration.MAP_NO_REDIRECT);

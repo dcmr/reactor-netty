@@ -283,6 +283,7 @@ final class HttpClientConnect extends HttpClient {
 //					"HttpClient#protocol " + "configuration has been provided: "+String.format("0x%x", configuration.protocols)));
 
 			Mono.<Connection>create(sink -> {
+				handler.sink = sink;
 				Bootstrap finalBootstrap;
 				//append secure handler if needed
 				if (handler.toURI.isSecure()) {
@@ -312,9 +313,8 @@ final class HttpClientConnect extends HttpClient {
 				}
 
 				BootstrapHandlers.connectionObserver(finalBootstrap,
-						new HttpObserver(sink, handler)
-						        .then(BootstrapHandlers.connectionObserver(finalBootstrap))
-						        .then(new HttpIOHandlerObserver(sink, handler)));
+						handler.then(BootstrapHandlers.connectionObserver(finalBootstrap))
+						       .then(new HttpIOHandlerObserver(sink, handler)));
 
 				tcpClient.connect(finalBootstrap)
 				         .subscribe(new TcpClientSubscriber(sink));
@@ -358,52 +358,6 @@ final class HttpClientConnect extends HttpClient {
 		}
 	}
 
-	final static class HttpObserver implements ConnectionObserver {
-
-		final MonoSink<Connection> sink;
-		final HttpClientHandler handler;
-
-		HttpObserver(MonoSink<Connection> sink, HttpClientHandler handler) {
-			this.sink = sink;
-			this.handler = handler;
-		}
-
-		@Override
-		public Context currentContext() {
-			return sink.currentContext();
-		}
-
-		@Override
-		public void onUncaughtException(Connection connection, Throwable error) {
-			if (error instanceof RedirectClientException) {
-				if (log.isDebugEnabled()) {
-					log.debug(format(connection.channel(), "The request will be redirected"));
-				}
-			}
-			else if (AbortedException.isConnectionReset(error)) {
-				if (log.isDebugEnabled()) {
-					log.debug(format(connection.channel(), "The connection observed an error, " +
-							"the request will be retried"), error);
-				}
-			}
-			else if (log.isWarnEnabled()) {
-				log.warn(format(connection.channel(), "The connection observed an error"), error);
-			}
-			sink.error(error);
-		}
-
-		@Override
-		public void onStateChange(Connection connection, State newState) {
-			if (newState == HttpClientState.RESPONSE_RECEIVED) {
-				sink.success(connection);
-				return;
-			}
-			if (newState == State.CONFIGURED && HttpClientOperations.class == connection.getClass()) {
-				handler.channel((HttpClientOperations) connection);
-			}
-		}
-	}
-
 	final static class HttpIOHandlerObserver implements ConnectionObserver {
 
 		final MonoSink<Connection> sink;
@@ -434,7 +388,7 @@ final class HttpClientConnect extends HttpClient {
 	}
 
 	static final class HttpClientHandler extends SocketAddress
-			implements Predicate<Throwable>, Supplier<SocketAddress> {
+			implements Predicate<Throwable>, Supplier<SocketAddress>, ConnectionObserver {
 
 		final HttpMethod              method;
 		final HttpHeaders             defaultHeaders;
@@ -453,6 +407,8 @@ final class HttpClientConnect extends HttpClient {
 		                              redirectRequestConsumer;
 		final HttpResponseDecoderSpec decoder;
 		final ProxyProvider           proxyProvider;
+
+		MonoSink<Connection>          sink;
 
 		volatile UriEndpoint        toURI;
 		volatile UriEndpoint        fromURI;
@@ -512,6 +468,7 @@ final class HttpClientConnect extends HttpClient {
 			this.websocketProtocols = configuration.websocketSubprotocols;
 			this.maxFramePayloadLength = configuration.websocketMaxFramePayloadLength;
 			this.websocketProxyPing = configuration.websocketProxyPing;
+			this.retried = !configuration.retryEnabled;
 			this.handler = configuration.body;
 			this.toURI = uriEndpointFactory.createUriEndpoint(uri, configuration.websocketSubprotocols != null);
 		}
@@ -681,6 +638,45 @@ final class HttpClientConnect extends HttpClient {
 				return true;
 			}
 			return false;
+		}
+
+		@Override
+		public Context currentContext() {
+			return sink.currentContext();
+		}
+
+		@Override
+		public void onUncaughtException(Connection connection, Throwable error) {
+			if (error instanceof RedirectClientException) {
+				if (log.isDebugEnabled()) {
+					log.debug(format(connection.channel(), "The request will be redirected"));
+				}
+			}
+			else if (AbortedException.isConnectionReset(error) && !retried) {
+				HttpClientOperations ops = connection.as(HttpClientOperations.class);
+				if (ops != null) {
+					ops.retrying = true;
+				}
+				if (log.isDebugEnabled()) {
+					log.debug(format(connection.channel(),
+							"The connection observed an error, the request will be retried"), error);
+				}
+			}
+			else if (log.isWarnEnabled()) {
+				log.warn(format(connection.channel(), "The connection observed an error"), error);
+			}
+			sink.error(error);
+		}
+
+		@Override
+		public void onStateChange(Connection connection, State newState) {
+			if (newState == HttpClientState.RESPONSE_RECEIVED) {
+				sink.success(connection);
+				return;
+			}
+			if (newState == State.CONFIGURED && HttpClientOperations.class == connection.getClass()) {
+				channel((HttpClientOperations) connection);
+			}
 		}
 
 		@Override
